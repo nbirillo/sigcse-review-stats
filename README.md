@@ -121,18 +121,70 @@ docker run --rm --user "$(id -u):$(id -g)" -e TZ=Europe/Berlin \
 The result is written to `output/review_stats_<date>_<time>.xlsx`.
 In Google Sheets: **File -> Import -> Upload -> Replace spreadsheet**. The spreadsheet link stays the same.
 
-## Colors
+## Output format
 
-| Color | Meaning |
-|---|---|
-| red | no reviews submitted yet |
-| yellow | less than half submitted |
-| light green | half or more, but not all |
-| dark green | all submitted |
+One xlsx file, `output/review_stats_<YYYY-MM-DD_HHMM>.xlsx`, with five tabs:
+Summary, Submissions, Reviewers, Needs help, All reviews. Values below are placeholders.
+On Submissions, Reviewers and All reviews the header row is frozen and has a filter.
+
+### Colors
+
+Rows on Submissions, Reviewers and Needs help are colored by progress
+(submitted reviews out of assigned ones):
+
+| Color | Status label | Meaning |
+|---|---|---|
+| red | `Not started` | no reviews submitted yet |
+| yellow | `Less than half` | less than half submitted |
+| light green | `Half or more` | half or more, but not all |
+| dark green | `Done` | all submitted |
+| grey | `No assignments` | only in the "Needs help" candidate pool: nothing assigned yet |
 
 Rows are sorted in the same order; within each group, by completion percentage.
 
-## "Needs help" tab
+### Summary
+
+Two-column key/value list:
+
+- `EasyChair review export` (date from the TXT), `Generated at`;
+- `Submissions`, `Reviews assigned`, `Reviews submitted`, `Progress` (%),
+  `Submissions with < N reviewers assigned`;
+- `Submissions by status` and `Reviewers by status`: count per status, colored as above;
+- `Reviews submitted per paper`: how many papers have 0, 1, 2, ... reviews;
+- `Warnings` (only if any): reviews whose reviewer is not in `reviewer.csv`, or reviews for a paper
+  the reviewer is not assigned to (these are counted as an extra assignment).
+
+### Submissions
+
+One row per submission (all papers from the submissions xlsx and `assignment.csv`).
+
+| Column | Content |
+|---|---|
+| `Status` | progress status, see Colors |
+| `#` | paper number |
+| `Title`, `Authors` | from the submissions xlsx |
+| `Submitted` | number of submitted reviews |
+| `Assigned` | number of assigned reviewers |
+| `%` | Submitted / Assigned |
+| `Senior PC submitted` | `yes` / `no`, or `n/a` if no senior PC is assigned |
+| `Scores`, `Avg score` | `TOTAL SCORE` of each review (comma-separated) and their average |
+| `Familiarity`, `Avg familiarity` | familiarity (1-5) of each review and their average |
+| `Submitted by` | `<reviewer> (<score>)`, comma-separated |
+| `Pending` | names of assigned reviewers who haven't submitted yet |
+
+### Reviewers
+
+One row per reviewer with at least one assignment.
+
+| Column | Content |
+|---|---|
+| `Status` | progress status, see Colors |
+| `Reviewer`, `Email`, `Role` | from `reviewer.csv`; role is `PC member`, `senior PC` or `track chair` |
+| `Assigned`, `Submitted`, `Remaining` | number of papers |
+| `%` | Submitted / Assigned |
+| `Pending papers (#)`, `Submitted papers (#)` | paper numbers, comma-separated |
+
+### "Needs help" tab
 
 Lists submissions with fewer than N reviewers assigned (default 5, change with `--min-reviewers N`)
 and suggests who could review them.
@@ -151,6 +203,54 @@ and suggests who could review them.
 
 Bids, conflicts and topics come from the same Assignment -> Download in CSV archive
 (`bid.csv`, `conflict.csv`, `reviewer_topic.csv`, `submission_topic.csv`).
+
+The tab has three sections one below another, each with a bold title row
+(if no paper needs help, it has a single line saying so instead):
+
+1. **`Submissions with fewer than N reviewers assigned (<count>)`**: the same data as on the
+   Submissions tab, plus:
+
+   | Column | Content |
+   |---|---|
+   | `Assigned` | number of assigned reviewers |
+   | `Missing` | N - Assigned |
+   | `Needed role` | `PC member` or `senior PC` |
+   | `Candidate 1..3 (1-M assigned)` | top 3 from the first pool |
+   | `Candidate 1..3 (0 assigned)` | top 3 from the second pool |
+
+   Each candidate cell reads
+   `<name> (<k> assigned; bid: <bid>; <n> matching topics: <topic>, <topic>)`;
+   `bid` is shown only if there is one, and the topics part becomes `0 matching topics` or
+   `no topics selected`. If a pool has fewer than 3 eligible people, the next cell says
+   `no other eligible candidates` (or `no eligible candidates`).
+2. **`Candidate pool: 1-M assignments (<role>: <count> people with <min>-<max> assigned)`**
+3. **`Candidate pool: no assignments yet (<role>: <count> people)`**
+
+   Both pool sections have the Reviewers tab columns, plus:
+
+   | Column | Content |
+   |---|---|
+   | `Topics selected` | how many topics the reviewer selected (0 = none) |
+   | `Suggested for (#)` | paper numbers where the reviewer is among the top 3 |
+
+   Rows are sorted by number of assignments, then by name.
+
+### All reviews
+
+One row per submitted review, sorted by paper number and review number.
+
+| Column | Content |
+|---|---|
+| `#`, `Title` | paper |
+| `Reviewer`, `Role` | reviewer and their role (`?` if not found in `reviewer.csv`) |
+| `Review #` | review number within the paper |
+| `Score` | `TOTAL SCORE` |
+| `Familiarity` | full familiarity text, e.g. `<1-5> (<label>)` |
+| *(other header fields)* | one column per other `Key: value` line from the review header, e.g. `Checked for Hallucinated References?` |
+| `Review text` | the `SUMMARY` section |
+| `Confidential remarks for PC` | the `CONFIDENTIAL REMARKS FOR THE PROGRAM COMMITTEE` section |
+
+Long texts are cut at 45,000 characters to stay under the Google Sheets cell limit (50,000).
 
 ## Input formats
 
