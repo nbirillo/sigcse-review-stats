@@ -25,11 +25,18 @@ input/
 ├── SIGCSE_TS_2027_review_list_<...>.txt   list of reviews (every time)
 ├── SIGCSE_TS_2027_<...>.xlsx              list of submissions (only if new papers were added)
 └── assignment/                            assignments, unzipped (only if assignments have changed)
-    ├── assignment.csv
-    └── reviewer.csv
+    ├── assignment.csv                     who is assigned to which paper (required)
+    ├── reviewer.csv                       PC members: name, email, role (required)
+    ├── conflict.csv                       conflicts of interest     ┐
+    ├── bid.csv                            reviewer bids             │ optional, used by the
+    ├── reviewer_topic.csv                 topics of each reviewer   │ "Needs help" tab
+    └── submission_topic.csv               topics of each paper      ┘
 ```
 
 If there are several files of the same kind, the newest one is used.
+The optional files come in the same archive; without them the "Needs help" tab still works,
+but candidates are not filtered by conflicts or ranked by bids and topics
+(see [the "Needs help" tab](#needs-help-tab) below for details).
 
 How to download the list of reviews:
 
