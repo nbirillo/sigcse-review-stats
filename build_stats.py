@@ -21,6 +21,7 @@ import zipfile
 import xml.etree.ElementTree as ET
 from collections import Counter, defaultdict
 from datetime import datetime
+from itertools import zip_longest
 from pathlib import Path
 
 from openpyxl import Workbook
@@ -37,8 +38,22 @@ UNDER_HALF = (1, "Less than half", "FFF2CC", "000000")
 OVER_HALF = (2, "Half or more", "D9EAD3", "000000")
 DONE = (3, "Done", "6AA84F", "FFFFFF")
 STATUSES = [NOT_STARTED, UNDER_HALF, OVER_HALF, DONE]
+# Only used for candidate reviewers who have nothing assigned yet
+NO_ASSIGNMENTS = (4, "No assignments", "EFEFEF", "000000")
 
 ROLE_NAMES = {"pc": "PC member", "senior": "senior PC", "chair": "track chair"}
+
+DEFAULT_MIN_REVIEWERS = 5
+DEFAULT_MAX_ASSIGNED = 7
+TOP_CANDIDATES = 3
+# Candidate pools on the "Needs help" tab: (key, column label, section title);
+# {max} is replaced with the --max-assigned value
+CANDIDATE_GROUPS = [
+    ("low", "1-{max} assigned", "1-{max} assignments"),
+    ("zero", "0 assigned", "no assignments yet"),
+]
+# Bid values from bid.csv; a higher weight ranks the candidate higher
+BID_WEIGHTS = {"yes": 2, "maybe": 1, "no": -1}
 
 
 def status_for(done, total):
@@ -148,6 +163,34 @@ def read_pc(folder):
     return reviewers, assignments
 
 
+def read_optional_csv(path):
+    if not path.exists():
+        return []
+    with open(path, encoding="utf-8") as f:
+        return [row for row in csv.reader(f) if row]
+
+
+def read_matching(folder):
+    """Conflicts, bids and topics from the same Assignment -> Download in CSV archive."""
+    conflicts = {(r[0], r[1]) for r in read_optional_csv(folder / "conflict.csv") if len(r) >= 2}
+    bids = {}
+    for r in read_optional_csv(folder / "bid.csv"):
+        if len(r) >= 3:
+            bid = r[2].strip().lower()
+            if bid == "conflict":
+                conflicts.add((r[0], r[1]))
+            else:
+                bids[(r[0], r[1])] = bid
+    rev_topics, sub_topics = defaultdict(set), defaultdict(set)
+    for r in read_optional_csv(folder / "reviewer_topic.csv"):
+        if len(r) >= 2:
+            rev_topics[r[0]].add(r[1])
+    for r in read_optional_csv(folder / "submission_topic.csv"):
+        if len(r) >= 2:
+            sub_topics[r[0]].add(r[1])
+    return conflicts, bids, rev_topics, sub_topics
+
+
 # ---------- formatting ----------
 
 HEADER_FILL = PatternFill("solid", fgColor="434343")
@@ -155,13 +198,23 @@ HEADER_FONT = Font(bold=True, color="FFFFFF")
 WRAP_TOP = Alignment(wrap_text=True, vertical="top")
 
 
-def write_table(ws, headers, rows, widths, status_col=None, pct_cols=()):
+def write_table(ws, headers, rows, widths=None, status_col=None, pct_cols=(), title=None):
+    """Append a table to the sheet.
+
+    Without a title the table fills the whole sheet (frozen header and filter);
+    with a title it is appended as a section below the existing content.
+    """
+    if title:
+        if ws.max_row > 1:
+            ws.append([])
+        ws.append([title])
+        ws.cell(ws.max_row, 1).font = Font(bold=True, size=12)
     ws.append(headers)
-    for c in ws[1]:
+    for c in ws[ws.max_row]:
         c.fill, c.font, c.alignment = HEADER_FILL, HEADER_FONT, Alignment(wrap_text=True, vertical="center")
     for row in rows:
-        status = row.pop(status_col) if status_col is not None else None
-        ws.append(row)
+        status = row[status_col] if status_col is not None else None
+        ws.append(row[:status_col] + row[status_col + 1:] if status_col is not None else row)
         r = ws.max_row
         for c in ws[r]:
             c.alignment = WRAP_TOP
@@ -170,10 +223,16 @@ def write_table(ws, headers, rows, widths, status_col=None, pct_cols=()):
                 c.font = Font(color=status[3])
         for pc in pct_cols:
             ws.cell(r, pc).number_format = "0%"
+    if widths:
+        set_widths(ws, widths)
+    if not title:
+        ws.freeze_panes = "A2"
+        ws.auto_filter.ref = ws.dimensions
+
+
+def set_widths(ws, widths):
     for i, w in enumerate(widths, 1):
         ws.column_dimensions[get_column_letter(i)].width = w
-    ws.freeze_panes = "A2"
-    ws.auto_filter.ref = ws.dimensions
 
 
 def fmt_list(values):
@@ -187,9 +246,11 @@ def avg(values):
 
 # ---------- main logic ----------
 
-def build(reviews_txt, subs_xlsx, pc_folder, out_path):
+def build(reviews_txt, subs_xlsx, pc_folder, out_path,
+          min_reviewers=DEFAULT_MIN_REVIEWERS, max_assigned=DEFAULT_MAX_ASSIGNED):
     export_date, txt_papers, reviews = parse_reviews(reviews_txt)
     reviewers, assignments = read_pc(pc_folder)
+    conflicts, bids, rev_topics, sub_topics = read_matching(pc_folder)
     subs = read_submissions_xlsx(subs_xlsx) if subs_xlsx else {}
     for num, p in txt_papers.items():
         subs.setdefault(num, {"title": p["title"], "authors": p["authors"]})
@@ -226,8 +287,15 @@ def build(reviews_txt, subs_xlsx, pc_folder, out_path):
     def rname(rid):
         return reviewers.get(rid, {}).get("name", rid)
 
+    def load(rid):
+        return len(assigned_by_rev.get(rid, []))
+
+    def paper_key(num):
+        return int(num) if num.isdigit() else 0
+
     # --- Submissions ---
     sub_rows = []
+    sub_row_by_num = {}
     for num, s in subs.items():
         assigned = assigned_by_paper.get(num, [])
         revs = sorted(reviews_by_paper.get(num, []), key=lambda r: r["review_no"])
@@ -237,7 +305,7 @@ def build(reviews_txt, subs_xlsx, pc_folder, out_path):
         seniors = [rid for rid in assigned if reviewers.get(rid, {}).get("role") == "senior PC"]
         senior_done = "n/a" if not seniors else ("yes" if any(r in done_ids for r in seniors) else "no")
         pending = [rname(rid) for rid in assigned if rid not in done_ids]
-        sub_rows.append([
+        row = [
             st, st[1], int(num) if num.isdigit() else num, s["title"], s["authors"],
             len(revs), total, (len(revs) / total) if total else 0, senior_done,
             fmt_list(r["score"] for r in revs), avg([r["score"] for r in revs]),
@@ -245,21 +313,73 @@ def build(reviews_txt, subs_xlsx, pc_folder, out_path):
             avg([r["familiarity"] for r in revs]),
             fmt_list(f"{r['reviewer']} ({r['score']})" for r in revs),
             fmt_list(pending),
-        ])
+        ]
+        sub_rows.append(row)
+        sub_row_by_num[num] = row
     sub_rows.sort(key=lambda r: (r[0][0], r[7], r[2] if isinstance(r[2], int) else 0))
 
     # --- Reviewers (only those with assignments) ---
-    rev_rows = []
-    for rid, papers in assigned_by_rev.items():
+    def reviewer_row(rid):
         r = reviewers.get(rid, {"name": rid, "email": "", "role": "?"})
+        papers = assigned_by_rev.get(rid, [])
         done = sorted(p for p in papers if (rid, p) in done_pairs)
         pending = sorted(p for p in papers if (rid, p) not in done_pairs)
-        st = status_for(len(done), len(papers))
-        rev_rows.append([
+        st = status_for(len(done), len(papers)) if papers else NO_ASSIGNMENTS
+        return [
             st, st[1], r["name"], r["email"], r["role"], len(papers), len(done), len(pending),
-            len(done) / len(papers), fmt_list(pending), fmt_list(done),
-        ])
+            len(done) / len(papers) if papers else "", fmt_list(pending), fmt_list(done),
+        ]
+
+    rev_rows = [reviewer_row(rid) for rid in assigned_by_rev]
     rev_rows.sort(key=lambda r: (r[0][0], r[8], r[2]))
+
+    # --- Submissions that need more reviewers and who could help ---
+    short = sorted(
+        (num for num in subs if len(assigned_by_paper.get(num, [])) < min_reviewers), key=paper_key
+    )
+    # Every paper is expected to have one senior PC; otherwise the missing reviewer is a PC member
+    needed_role = {}
+    for num in short:
+        roles = {reviewers.get(rid, {}).get("role") for rid in assigned_by_paper.get(num, [])}
+        needed_role[num] = "PC member" if "senior PC" in roles else "senior PC"
+
+    # Two candidate pools per role: reviewers with 1..max_assigned assignments, and reviewers
+    # with none. The latter are kept separate because there may be a reason they can't review.
+    pools = {}  # (role, group) -> [reviewer id]
+    for role in set(needed_role.values()):
+        eligible = sorted((rid for rid, r in reviewers.items() if r["role"] == role), key=rname)
+        pools[(role, "low")] = [rid for rid in eligible if 1 <= load(rid) <= max_assigned]
+        pools[(role, "zero")] = [rid for rid in eligible if load(rid) == 0]
+
+    # Rank candidates per paper and pool: bid first, then topic overlap, then current load
+    suggestions = {}  # (paper, group) -> top candidates
+    suggested_for = defaultdict(list)
+    for num in short:
+        for group, _, _ in CANDIDATE_GROUPS:
+            ranked = []
+            for rid in pools[(needed_role[num], group)]:
+                if rid in assigned_by_paper.get(num, []) or (rid, num) in conflicts:
+                    continue
+                bid = bids.get((rid, num), "")
+                overlap = sorted(rev_topics.get(rid, set()) & sub_topics.get(num, set()))
+                ranked.append(((-BID_WEIGHTS.get(bid, 0), -len(overlap), load(rid), rname(rid)), rid, bid, overlap))
+            ranked.sort()
+            suggestions[(num, group)] = ranked[:TOP_CANDIDATES]
+            for _, rid, _, _ in suggestions[(num, group)]:
+                suggested_for[rid].append(num)
+
+    def candidate_text(rid, bid, overlap):
+        parts = [f"{load(rid)} assigned"]
+        if bid:
+            parts.append(f"bid: {bid}")
+        if not rev_topics.get(rid):
+            parts.append("no topics selected")
+        elif overlap:
+            noun = "topic" if len(overlap) == 1 else "topics"
+            parts.append(f"{len(overlap)} matching {noun}: {', '.join(overlap)}")
+        else:
+            parts.append("0 matching topics")
+        return f"{rname(rid)} ({'; '.join(parts)})"
 
     # --- Writing the workbook ---
     wb = Workbook()
@@ -274,6 +394,7 @@ def build(reviews_txt, subs_xlsx, pc_folder, out_path):
         ("Reviews assigned", total_assigned),
         ("Reviews submitted", len(reviews)),
         ("Progress", len(reviews) / total_assigned if total_assigned else 0),
+        (f"Submissions with < {min_reviewers} reviewers assigned", len(short)),
         ("", ""),
     ]
     for label, value in summary:
@@ -330,6 +451,67 @@ def build(reviews_txt, subs_xlsx, pc_folder, out_path):
         status_col=0, pct_cols=(8,),
     )
 
+    ws = wb.create_sheet("Needs help")
+    if not short:
+        ws.append([f"All submissions have at least {min_reviewers} reviewers assigned."])
+        ws.column_dimensions["A"].width = 60
+    else:
+        help_rows = []
+        for num in short:
+            base = sub_row_by_num[num]
+            n_assigned = len(assigned_by_paper.get(num, []))
+            cands = []
+            for group, _, _ in CANDIDATE_GROUPS:
+                texts = [candidate_text(rid, bid, overlap) for _, rid, bid, overlap in suggestions[(num, group)]]
+                if len(texts) < TOP_CANDIDATES:
+                    texts.append("no other eligible candidates" if texts else "no eligible candidates")
+                    texts += [""] * (TOP_CANDIDATES - len(texts))
+                cands += texts
+            help_rows.append(
+                base[:5] + [n_assigned, min_reviewers - n_assigned, needed_role[num]] + cands + [base[5]] + base[7:]
+            )
+        n_cand_cols = TOP_CANDIDATES * len(CANDIDATE_GROUPS)
+        write_table(
+            ws,
+            ["Status", "#", "Title", "Authors", "Assigned", "Missing", "Needed role"]
+            + [f"Candidate {i} ({label.format(max=max_assigned)})"
+               for _, label, _ in CANDIDATE_GROUPS for i in range(1, TOP_CANDIDATES + 1)]
+            + ["Submitted", "%", "Senior PC submitted", "Scores", "Avg score", "Familiarity",
+               "Avg familiarity", "Submitted by", "Pending"],
+            help_rows,
+            status_col=0, pct_cols=(9 + n_cand_cols,),
+            title=f"Submissions with fewer than {min_reviewers} reviewers assigned ({len(short)})",
+        )
+
+        for group, _, section in CANDIDATE_GROUPS:
+            pool_rows = []
+            desc = []
+            for role in ("PC member", "senior PC"):
+                pool = sorted(pools.get((role, group), []), key=lambda r: (load(r), rname(r)))
+                if (role, group) in pools:
+                    loads = sorted({load(rid) for rid in pool})
+                    span = f" with {loads[0]}-{loads[-1]} assigned" if loads and group != "zero" else ""
+                    desc.append(f"{role}: {len(pool)} people{span}")
+                for rid in pool:
+                    pool_rows.append(
+                        reviewer_row(rid)
+                        + [len(rev_topics.get(rid, ())), fmt_list(sorted(suggested_for[rid], key=paper_key))]
+                    )
+            write_table(
+                ws,
+                ["Status", "Reviewer", "Email", "Role", "Assigned", "Submitted", "Remaining", "%",
+                 "Pending papers (#)", "Submitted papers (#)", "Topics selected", "Suggested for (#)"],
+                pool_rows,
+                status_col=0, pct_cols=(8,),
+                title=f"Candidate pool: {section.format(max=max_assigned)} ({'; '.join(desc)})",
+            )
+        # The sections share columns, so each column gets the widest of their widths
+        set_widths(ws, [max(a, b) for a, b in zip_longest(
+            [18, 7, 50, 35, 10, 8, 12] + [45] * n_cand_cols + [10, 7, 10, 12, 10, 12, 12, 40, 50],
+            [18, 28, 32, 12, 10, 8, 10, 7, 40, 40, 10, 20],
+            fillvalue=0,
+        )])
+
     extra_keys = sorted({k for rv in reviews for k in rv["extra"]})
     sec_keys = ["SUMMARY", "CONFIDENTIAL REMARKS FOR THE PROGRAM COMMITTEE"]
     write_table(
@@ -348,7 +530,7 @@ def build(reviews_txt, subs_xlsx, pc_folder, out_path):
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     wb.save(out_path)
-    return len(subs), len(reviews), total_assigned, warnings
+    return len(subs), len(reviews), total_assigned, len(short), warnings
 
 
 def main():
@@ -359,6 +541,10 @@ def main():
     ap.add_argument("--submissions", help="xlsx list of submissions (default: newest SIGCSE_TS_2027_*.xlsx in the input dir)")
     ap.add_argument("--assignment-dir", help="folder with assignment.csv and reviewer.csv (default: <input dir>/assignment)")
     ap.add_argument("-o", "--output", help="path to the output xlsx (overrides --output-dir)")
+    ap.add_argument("--min-reviewers", type=int, default=DEFAULT_MIN_REVIEWERS,
+                    help=f"submissions with fewer assigned reviewers go to the 'Needs help' tab (default: {DEFAULT_MIN_REVIEWERS})")
+    ap.add_argument("--max-assigned", type=int, default=DEFAULT_MAX_ASSIGNED,
+                    help=f"candidates are reviewers with 0 or with 1..N assignments (default N: {DEFAULT_MAX_ASSIGNED})")
     args = ap.parse_args()
 
     input_dir = Path(args.input_dir)
@@ -378,9 +564,12 @@ def main():
     print(f"Reviews:      {reviews_txt.name}")
     print(f"Submissions:  {subs_xlsx.name if subs_xlsx else 'none (from assignments only)'}")
     print(f"Assignments:  {assignment_dir}")
-    n_subs, n_reviews, n_assigned, warnings = build(reviews_txt, subs_xlsx, assignment_dir, out)
+    n_subs, n_reviews, n_assigned, n_short, warnings = build(
+        reviews_txt, subs_xlsx, assignment_dir, out, args.min_reviewers, args.max_assigned
+    )
     progress = f" ({n_reviews / n_assigned:.0%})" if n_assigned else ""
     print(f"\nSubmissions: {n_subs}, reviews submitted: {n_reviews} of {n_assigned}{progress}")
+    print(f"Submissions with fewer than {args.min_reviewers} reviewers assigned: {n_short}")
     for w in warnings:
         print("WARNING:", w)
     print(f"\nDone: {out}")

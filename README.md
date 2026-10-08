@@ -92,6 +92,26 @@ In Google Sheets: **File -> Import -> Upload -> Replace spreadsheet**. The sprea
 
 Rows are sorted in the same order; within each group, by completion percentage.
 
+## "Needs help" tab
+
+Lists submissions with fewer than N reviewers assigned (default 5, change with `--min-reviewers N`)
+and suggests who could review them.
+
+- **Needed role**: a senior PC if the paper has none yet, otherwise a PC member.
+- **Two candidate pools** of that role, shown as separate columns and tables:
+  - *1-M assignments*: reviewers with at least 1 and at most M assignments
+    (default M = 7, change with `--max-assigned M`);
+  - *no assignments yet*: reviewers with 0 assignments. They are kept apart because there may be a
+    reason they can't review (e.g. they joined late or declined).
+- **Top 3 candidates per paper, picked separately within each pool**, excluding conflicts and reviewers already
+  assigned to the paper, ranked by bid (yes > maybe > none > no), then by the number of matching
+  topics, then by current load.
+- **Suggested for (#)** in the pool shows which papers each person was suggested for, so you can spread
+  the load if the same person tops several papers.
+
+Bids, conflicts and topics come from the same Assignment -> Download in CSV archive
+(`bid.csv`, `conflict.csv`, `reviewer_topic.csv`, `submission_topic.csv`).
+
 ## License
 
 Copyright 2026 Anastasiia Birillo. Licensed under the [Apache License 2.0](LICENSE).
