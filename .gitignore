@@ -1,0 +1,9 @@
+# EasyChair exports and generated reports contain confidential review data - never commit them
+input/*
+!input/.gitkeep
+output/*
+!output/.gitkeep
+
+.venv/
+__pycache__/
+.DS_Store

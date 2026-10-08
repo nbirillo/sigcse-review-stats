@@ -1,0 +1,6 @@
+.git
+.venv
+input
+output
+**/__pycache__
+.DS_Store
