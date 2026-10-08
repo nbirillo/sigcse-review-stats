@@ -4,8 +4,8 @@
 """Build review statistics for SIGCSE TS 2027 (Posters) from EasyChair exports.
 
 Input files (looked up in input/ by default, the newest one wins):
-  input/*review_list*.txt          - Reviews -> List of reviews (plain-text export)
-  input/SIGCSE_TS_2027_*.xlsx      - list of submissions (number, authors, title)
+  input/*review_list*.txt          - Administration -> List of reviews, all options on, Generate list
+  input/SIGCSE_TS_2027_*.xlsx      - Submissions in Excel, no checkboxes selected, Download
   input/assignment/assignment.csv  - Assignment -> Download in CSV (reviewer id, paper number)
   input/assignment/reviewer.csv    - same archive (id, name, email, role)
 

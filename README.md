@@ -22,14 +22,29 @@ output/             generated spreadsheets appear here
 
 ```
 input/
-├── SIGCSE_TS_2027_review_list_<...>.txt   Reviews -> List of reviews (every time)
+├── SIGCSE_TS_2027_review_list_<...>.txt   list of reviews (every time)
 ├── SIGCSE_TS_2027_<...>.xlsx              list of submissions (only if new papers were added)
-└── assignment/                            Assignment -> Download in CSV, unzipped
-    ├── assignment.csv                     (only if assignments have changed)
+└── assignment/                            assignments, unzipped (only if assignments have changed)
+    ├── assignment.csv
     └── reviewer.csv
 ```
 
 If there are several files of the same kind, the newest one is used.
+
+How to download the list of reviews:
+
+1. **Administration -> List of reviews**.
+2. Select all options: **show author names**, **show reviewer names**, **include comments**,
+   **download as an attachment**.
+3. Click **Generate list**.
+
+How to download the list of submissions:
+
+1. **Submissions in Excel**.
+2. Leave all checkboxes unselected.
+3. Click **Download**.
+
+Assignments: **Assignment -> Download in CSV**, then unzip the archive into `input/assignment/`.
 
 ## 2. Run the script
 
